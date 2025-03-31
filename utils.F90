@@ -1,8 +1,17 @@
+! 工具函数模块
+! 本模块提供了各种通用工具函数
+! 主要功能包括：
+! 1. 随机数生成和初始化
+! 2. 插值计算
+! 3. 复数运算
+! 4. 矩阵操作
+! 5. 文件输出控制
+
 module utils
-  use prec
-  use constants
+  use prec      ! 提供精度控制
+  use constants ! 提供常量定义
 #ifdef ENABLEMPI
-  use mpi
+  use mpi       ! 提供MPI并行计算支持
 #endif
   implicit none
 
@@ -22,8 +31,8 @@ module utils
 
 contains
 
-  ! initialize the random seed from the system clock
-  ! code from: http://fortranwiki.org/fortran/show/random_seed
+  !! 从系统时钟初始化随机数种子
+  !! 代码来源：http://fortranwiki.org/fortran/show/random_seed
   subroutine init_random_seed(salt)
     implicit none
     integer, intent(in) :: salt
@@ -53,6 +62,7 @@ contains
 
   end subroutine
 
+  !! 实数线性插值
   elemental function interpolate_r(x, a0, a1)
     real(q), intent(in) :: x, a0, a1
     real(q)             :: interpolate_r
@@ -60,6 +70,7 @@ contains
     interpolate_r = (1.0_q-x) * a0 + x * a1
   end function
     
+  !! 复数线性插值
   elemental function interpolate_c(x, a0, a1)
     real(q), intent(in)    :: x
     complex(q), intent(in) :: a0, a1
@@ -68,6 +79,7 @@ contains
     interpolate_c = (con%uno-x) * a0 + x * a1
   end function
 
+  !! 计算复数的模
   elemental function cmplx_norm(x)
     complex(q), intent(in) :: x
     real(q)                :: cmplx_norm
@@ -75,6 +87,7 @@ contains
     cmplx_norm = REAL(CONJG(x) * x, kind=q)
   end function
 
+  !! 从向量创建对角矩阵
   pure function zDIAG(N, V)
     implicit none
     integer, intent(in)   :: N
@@ -89,6 +102,7 @@ contains
     zDIAG = unpack(V, MASK, zDIAG)
   end function
 
+  !! 支持MPI的消息屏幕输出
   subroutine printToScreen(msg, fh)
     character(len=*), intent(in) :: msg
     integer, intent(in) :: fh

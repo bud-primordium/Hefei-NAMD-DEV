@@ -1,22 +1,40 @@
+! DISH (Decoherence-Induced Surface Hopping) 模块
+! 本模块实现了基于退相干诱导的表面跳跃方法
+! 主要功能包括：
+! 1. 计算退相干时间
+! 2. 实现表面跳跃动力学
+! 3. 处理波函数投影
+! 4. 支持并行计算
+! 5. 提供数据输出接口
+
 module dish
-  use prec
-  use constants
-  use fileio
-  use utils
-  use parallel
-  use couplings
-  use hamil
-  use TimeProp
+  use prec      ! 提供精度控制和常量定义
+  use constants ! 提供常量定义
+  use fileio    ! 提供文件操作接口
+  use utils     ! 提供通用工具函数
+  use parallel  ! 提供并行计算支持
+  use couplings ! 提供非绝热耦合计算
+  use hamil     ! 提供哈密顿量相关计算
+  use TimeProp  ! 提供时间演化计算
 #ifdef ENABLEMPI
-  use mpi
+  use mpi       ! 提供MPI并行计算支持
 #endif
   implicit none
 
-  private :: calcDect, whichToDec, projector
+  private :: calcDect, whichToDec, projector  ! 私有子程序，只能在模块内部使用
   private :: printDISH, printMPDISH
 
 contains
 
+  ! 计算退相干时间
+  ! 输入：
+  ! - ks: 包含波函数信息的TDKS类型
+  ! 输出：
+  ! - DECOTIME: 退相干时间 tau_i(t)
+  ! - COEFFISQ: 波函数系数平方 |c_i(t)|^2
+  ! 流程：
+  ! 1. 计算波函数系数的平方
+  ! 2. 根据退相干率矩阵计算退相干时间
   subroutine calcDect(ks, DECOTIME, COEFFISQ)
     implicit none
     type(TDKS), intent(in) :: ks
@@ -25,10 +43,15 @@ contains
     real(kind=q), dimension(ks%ndim), intent(out) :: COEFFISQ !! |c_i(t)|^2
     integer :: i
 
+    ! 计算波函数系数的平方
     COEFFISQ(:) = REAL(CONJG(ks%psi_c(:)) * ks%psi_c(:), kind=q)
 
-    ! Calculating Decoherence Time tau_a(t)
-    ! 1/tau_a(t) = SUM_{i!=a}|c_i(t)|^2 * r_ai
+    ! 计算退相干时间 tau_a(t)
+    ! 公式：1/tau_a(t) = SUM_{i!=a}|c_i(t)|^2 * r_ai
+    ! 其中：
+    ! - tau_a(t): 态a的退相干时间
+    ! - |c_i(t)|^2: 态i的布居数
+    ! - r_ai: 退相干率矩阵元
     do i=1, ks%ndim
       ! DEPHMATR(j,i)=DEPHMATR(i,j)
       DECOTIME(i) = 1.0_q / SUM(inp%DEPHMATR(:,i) * COEFFISQ(:))
@@ -36,6 +59,16 @@ contains
     !write(90,*),DECOTIME
   end subroutine
 
+  ! 确定哪个态发生退相干
+  ! 输入：
+  ! - ks: 包含波函数信息的TDKS类型
+  ! - DECOTIME: 退相干时间
+  ! - shuffle: 随机打乱的态索引数组
+  ! 输出：
+  ! - which: 发生退相干的态索引
+  ! 流程：
+  ! 1. 使用Fisher-Yates算法随机打乱态索引
+  ! 2. 检查每个态的退相干时间是否达到阈值
   subroutine whichToDec(ks, DECOTIME, which, shuffle)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -54,7 +87,7 @@ contains
     !! decstate = 0
     which = 0
 
-
+    ! Fisher-Yates洗牌算法，用于随机打乱态索引
     do j=ks%ndim,1,-1
       call random_number(r)
       i=INT(ks%ndim*r)+1
@@ -63,17 +96,32 @@ contains
       shuffle(j)=tmp
     end do
 
-
+    ! 检查每个态的退相干时间
     do j=1, ks%ndim
       i=shuffle(j)
       if ( DECOTIME(i) <= ks%dish_decmoment(i) ) then !! tau_i(t) <= t_i(t)
         which = i
-        ks%dish_decmoment(which) = 0.0_q    !! update the decoherence moment
+        ks%dish_decmoment(which) = 0.0_q    !! 更新退相干时刻
         exit
       end if
     end do
   end subroutine
 
+  ! 波函数投影操作
+  ! 输入：
+  ! - ks, ks0: TDKS类型，包含波函数信息
+  ! - olap: 重叠矩阵
+  ! - COEFFISQ: 波函数系数平方
+  ! - which: 发生退相干的态
+  ! - tion: 当前时间步
+  ! - indion: 离子步
+  ! - cstat: 当前态
+  ! - iend: 终止态
+  ! - fgend: 是否到达终止态
+  ! 流程：
+  ! 1. 计算玻尔兹曼因子和能量差
+  ! 2. 根据概率决定是否进行表面跳跃
+  ! 3. 更新波函数和布居数
   subroutine projector(ks, COEFFISQ, which, tion, indion, cstat, iend, fgend, ks0, olap)
     implicit none
     type(TDKS), intent(inout) :: ks, ks0
@@ -88,12 +136,14 @@ contains
     real(kind=q) :: r, kbT, lower, upper, norm_c, popOnWhich
     real(kind=q), dimension(ks%ndim) :: popBoltz, dE
 
+    ! 计算玻尔兹曼因子
     kbT = inp%TEMP * BOLKEV
     call random_number(r)
 
-    !! hopping probability with Boltzmann factor
+    !! 使用玻尔兹曼因子的跳跃概率
     popBoltz = COEFFISQ
 
+    ! 计算能量差
     dE = ((olap%Eig(  :  ,tion) + olap%Eig(  :  , tion+1)) - &
           (olap%Eig(cstat,tion) + olap%Eig(cstat, tion+1))) /2.0_q
     if (inp%LHOLE) then
@@ -105,7 +155,7 @@ contains
     popOnWhich = popBoltz(which)
 
     if (r <= popOnWhich) then
-    !! project in, hop: cstat -> which
+    !! 投影到目标态，跳跃：cstat -> which
       ks%psi_c = con%cero
       ks%psi_c(which) = con%uno
 
@@ -117,16 +167,16 @@ contains
       cstat = which
 
     else
-    !! project out, hop: cstat -> j != which, with prob |c_j(t)|^2
-    !! Here is a problem, when projecting out, hop upward hasn't been scaled by Boltzmann factor
-    !! Assuming if r > MAX(upper) then reject this hop, this should obey the DBC.
+    !! 投影到其他态，跳跃：cstat -> j != which，概率为|c_j(t)|^2
+    !! 注意这有个问题：向上跳跃时没有考虑玻尔兹曼因子
+    !! 假设如果r > MAX(upper)则拒绝跳跃，这应该满足细致平衡条件
       ks%psi_c(which) = con%cero
       COEFFISQ(which) = 0.0_q
       norm_c = SUM(COEFFISQ) !! 1-|c_a|^2
       ks%psi_c(:) = ks%psi_c(:) / SQRT(norm_c)
 
       !if (cstat==which) then
-      !! renormalize COEFFISQ, so SUM(|c_j(t)|^2) = 1
+      !! 重新归一化COEFFISQ，使SUM(|c_j(t)|^2) = 1
       ! COEFFISQ = COEFFISQ / norm_c 
       ! call random_number(r)
 !      popBoltz(which) = 0.0_q
@@ -158,7 +208,15 @@ contains
 
   end subroutine
 
-
+  ! 运行DISH动力学模拟
+  ! 输入：
+  ! - ks: TDKS类型，包含波函数信息
+  ! - olap: 重叠矩阵
+  ! 流程：
+  ! 1. 初始化波函数和布居数
+  ! 2. 进行时间演化
+  ! 3. 处理退相干和表面跳跃
+  ! 4. 输出结果
   subroutine runDISH(ks, olap)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -173,7 +231,7 @@ contains
     integer :: istat, iend
     integer :: which
     type(TDKS), allocatable, dimension(:) :: ks_list
-    logical,    allocatable, dimension(:) :: fgend !! recomb indicator, tells recomb from which state at which time
+    logical,    allocatable, dimension(:) :: fgend !! 重组指示器，记录从哪个态在哪个时间发生重组
     integer,    allocatable, dimension(:) :: cstat
     integer, dimension(ks%ndim)                :: shuffle
     real(kind=q), dimension(ks%ndim)           :: COEFFISQ  !! |c_i(t)|^2
@@ -185,6 +243,7 @@ contains
     integer :: ierr
 
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    ! 并行计算任务分配说明：
     ! A = Diag, B = Hpsi, C = SH, D = write
     ! #PROG  1  A...B..A...B..C....D
     !        2  A...B..A...B..C....
@@ -195,43 +254,45 @@ contains
     call MPI_BARRIER(inp%COMMUNICATOR, ierr)
 #endif
 
-    ! N = ceiling(REAL(inp%NTRAJ)/inp%NPROG)
+    ! 分配并行计算任务, N = ceiling(REAL(inp%NTRAJ)/inp%NPROG)
     call divideTasks(inp%IPROG, inp%NPROG, inp%NTRAJ, lower, upper, N)
     allocate(ks_list(N))
     allocate(fgend(N))
     allocate(cstat(N))
 
-    ! At the first step, current state always equal initial state
+    ! 初始化：当前态等于初始态
     istat = inp%INIBAND
     iend  = inp%LORB
     cstat = istat
     fgend = .FALSE.
     init  = .TRUE.
     lbd   = 2
-    ubd   = 1 ! For short verion, ubd <=> indion
+    ubd   = 1 ! 短版本中，ubd <=> indion
     uboundry = MAXSIZE
 
+    ! 初始化布居数数组
     deallocate(ks%dish_pops)
     ks_list = ks
     allocate(ks%dish_pops(ks%ndim, MIN(MAXSIZE, inp%NAMDTIME)))
     ks%dish_pops = 0.0_q
     ks%dish_pops(inp%INIBAND, 1) = 1.0_q
 
+    ! 初始化随机打乱数组
     shuffle = [(i, i=1,ks%ndim)]
     edt = inp%POTIM / inp%NELM
 
-    ! long version. First ouput init condition. Then output M-1 at one time.
-    ! Beware coup is long enough.
+    ! 长版本：首先输出初始条件，然后每次输出M-1个时间步
+    ! 注意：耦合矩阵必须足够长
     call setOlapBoundry(olap, inp%NAMDTINI)
     if (inp%IPROG == 0) then
       call printDISH(ks, olap, lbd, ubd, step=0)
       if (inp%LSPACE) call printMPDISH(ks, lbd, ubd, step=0)
     end if
 
-    !! The loop start here. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    !! 主循环开始 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     do indion = 1, inp%NAMDTIME - 1
       if (.NOT. all(fgend)) then
-        ! NAMDTINI >= 2, tion+inp%NAMDTINI-1 <= NSW(FSSH), dump 1
+        ! NAMDTINI >= 2, tion+inp%NAMDTINI-1 <= NSW(FSSH), 输出1
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         !          S                  E
         ! E1--D1--E2--D2--E3--D3------EN--DN--XX
@@ -239,15 +300,16 @@ contains
         !                              S                      E
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-        ! for DISH, one cycle has NSW-2 intervals.
+        ! DISH中，一个周期有NSW-2个时间间隔
         tion = 2 + MOD(indion+inp%NAMDTINI-1-2, inp%NSW-2) ! 2 <= tion <= 2+(NSW-3) = NSW-1
 
+        ! 电子时间演化
         do tele = 1, inp%NELM
           select case (inp%ALGO_INT)
           case (0)
             call make_hamil(tion, tele, olap, ks)
             call TrotterMat(ks, edt)
-          case (11) ! this method will accumulate error! May renormalize wfc.
+          case (11) ! 此方法会累积误差！可能需要重新归一化波函数
             call make_hamil(tion, tele, olap, ks)
             call EulerMat(ks, edt)
           case (10)
@@ -265,7 +327,7 @@ contains
           end select
           ham = ks%ham_c
 
-          ! TODO init conflict with OMP
+          ! TODO init与OMP冲突
           !!$OMP PARALLEL DO DEFAULT(SHARED) PRIVATE(i,ksi) IF (inp%NPARDISH > 1)
           do i = 1, N
             if (fgend(i)) cycle
@@ -312,7 +374,7 @@ contains
           end if
           
           if ( fgend(i) ) then
-            ! recomb completed
+            ! 重组完成
             ks%dish_pops(cstat(i), ubd+1:) = ks%dish_pops(cstat(i), ubd+1:) + 3.0_q
           else
             ks%dish_pops(cstat(i), ubd+1) = ks%dish_pops(cstat(i), ubd+1) + 3.0_q
@@ -336,13 +398,13 @@ contains
           call printDISH(ks, olap, lbd, ubd, step=1)
           if (inp%LSPACE) call printMPDISH(ks, lbd, ubd, step=1)
         end if
-        ! refresh
+        ! 更新边界
         lbd = ubd + 1
         ubd = ubd
         uboundry = ubd+MAXSIZE-1
-        ! recom: keep accumulating. Copy from the last of the old list.
-        ! pops:  keep changing, except those have recombined. 
-        !        The first of the new list is wrong, but useless.
+        ! 重组：继续累积。从旧列表的最后一个复制
+        ! 布居数：继续变化，除了已经重组的态
+        !        新列表的第一个是错误的，但无用
         deallocate(ks%dish_pops)
         allocate(ks%dish_pops(ks%ndim, ubd:ubd+MAXSIZE-1))
         ks%dish_pops = 0.0_q
@@ -355,12 +417,12 @@ contains
         call setOlapBoundry(olap, tion+1)
       end if
     end do
-    !! The loop end here. !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    !! 主循环结束 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 #ifdef ENABLEMPI
     ! MPI_REDUCE(SENDBUF, RECVBUF, COUNT, DATATYPE, OP, ROOT, COMM, IERROR)
-    ! Buffer parameters inbuf and inoutbuf must not be aliased
-    ! use +0 bypass it.
+    ! 缓冲区参数inbuf和inoutbuf不能是别名
+    ! 使用+0绕过这个问题
     if (inp%NPROG > 1) then
       call MPI_REDUCE(ks%dish_pops+0.0_q, ks%dish_pops, size(ks%dish_pops), MPI_REAL8, MPI_SUM, 0, inp%COMMUNICATOR, ierr)
     end if
@@ -377,7 +439,16 @@ contains
     deallocate(cstat)
   end subroutine
 
-
+  ! 输出DISH模拟结果
+  ! 输入：
+  ! - ks: TDKS类型，包含波函数信息
+  ! - olap: 重叠矩阵
+  ! - lbd, ubd: 下边界和上边界
+  ! - step: 输出步骤（0=初始化，1=中间结果，2=结束）
+  ! 流程：
+  ! 1. 根据输出模式选择文件格式
+  ! 2. 计算并输出布居数
+  ! 3. 计算并输出平均能量
   subroutine printDISH(ks, olap, lbd, ubd, step)
     implicit none
     type(TDKS), intent(in) :: ks
@@ -396,8 +467,9 @@ contains
     if (step == 0) then
       indion = 1
       tion = 2 + MOD(indion+inp%NAMDTINI-1-2,inp%NSW-2)
-      ! open, in the init step ks%dish_pops is the real pop & ks%recom_pops = 0
+      ! 初始化步骤：打开文件，ks%dish_pops是实际布居数，ks%recom_pops = 0
       if (inp%LBINOUT) then
+        ! 打开二进制输出文件
         open(unit=27,                                   &
              file='AVGENE.bin.' // trim(adjustl(buf)),  &
              form='unformatted',                        &
@@ -424,6 +496,7 @@ contains
           stop
         end if
 
+        ! 写入初始数据
         write(unit=27) [REAL(tion, kind=q), &
                         indion * inp%POTIM, &
                         SUM(olap%Eig(:,tion) * ks%dish_pops(:,indion))]
@@ -432,6 +505,7 @@ contains
         return
       end if
 
+      ! 打开文本输出文件
       open(unit=24, file='SHPROP.' // trim(adjustl(buf)), status='unknown', action='write', iostat=ierr)
       open(unit=28, file='RECOMB.' // trim(adjustl(buf)), status='unknown', action='write', iostat=ierr)
       if (ierr /= 0) then
@@ -439,6 +513,7 @@ contains
         stop
       end if
 
+      ! 写入初始数据
       write(unit=24,fmt=out_fmt) indion * inp%POTIM, SUM(olap%Eig(:,tion) * ks%dish_pops(:,indion)), &
                             (ks%dish_pops(i,indion), i=1, ks%ndim)
 
@@ -449,12 +524,14 @@ contains
     end if
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
+    ! 分配内存并计算布居数
     allocate(dish_pops(ks%ndim, lbd:ubd))
     allocate(recom_pops(ks%ndim, lbd:ubd))
     dish_pops = NINT(ks%dish_pops(:, lbd:ubd)/3) / REAL(inp%NTRAJ, kind=q)
     recom_pops = MOD(ks%dish_pops(:, lbd:ubd), 3.0_q)
 
     if (inp%LBINOUT) then
+      ! 二进制输出
       allocate(avgene(3, lbd:ubd)) ! tion, time, avgene
       do indion=lbd, ubd
         tion = 2 + MOD(indion+inp%NAMDTINI-1-2,inp%NSW-2)
@@ -468,6 +545,7 @@ contains
       write(unit=28) recom_pops
       deallocate(avgene)
     else
+      ! 文本输出
       do indion=lbd, ubd
         tion = 2 + MOD(indion+inp%NAMDTINI-1-2,inp%NSW-2)
 
@@ -490,6 +568,15 @@ contains
 
   end subroutine
 
+  ! 输出多粒子态DISH模拟结果
+  ! 输入：
+  ! - ks: TDKS类型，包含波函数信息
+  ! - lbd, ubd: 下边界和上边界
+  ! - step: 输出步骤（0=初始化，1=中间结果，2=结束）
+  ! 流程：
+  ! 1. 计算多粒子布居数
+  ! 2. 根据输出模式选择文件格式
+  ! 3. 输出布居数数据
   subroutine printMPDISH(ks, lbd, ubd, step)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -510,6 +597,7 @@ contains
       indion = 1
       tion = 2 + MOD(indion+inp%NAMDTINI-1-2,inp%NSW-2)
 
+      ! 初始化多粒子布居数
       allocate(dish_mppops(inp%NBADNS, 1))
       dish_mppops = 0.0_q
       do i=1, ks%ndim
@@ -519,8 +607,9 @@ contains
                                      ks%dish_pops(i,:)
         end do
       end do
-      ! open, in the init step ks%dish_pops is the real pop & ks%recom_pops = 0
+      ! 初始化步骤：打开文件，ks%dish_pops是实际布居数，ks%recom_pops = 0
       if (inp%LBINOUT) then
+        ! 打开二进制输出文件
         open(unit=52,                                      &
              file='MPSHPROP.bin.' // trim(adjustl(buf)),   &
              form='unformatted',                           &
@@ -538,12 +627,14 @@ contains
         return
       end if
 
+      ! 打开文本输出文件
       open(unit=52, file='MPSHPROP.' // trim(adjustl(buf)), status='unknown', action='write', iostat=ierr)
       if (ierr /= 0) then
         write(*,*) "[E] IOError: MPSHPROP file I/O error!"
         stop
       end if
 
+      ! 写入初始数据
       write(unit=52, fmt=out_fmt) indion * inp%POTIM, & 
                                   ! SUM(ks%eigKs(:,tion) * ks%dish_pops(:,indion)) / inp%NACELE, &
                                   (dish_mppops(i,indion), i=1, inp%NBADNS)
@@ -552,10 +643,12 @@ contains
     end if
     !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
+    ! 分配内存并计算多粒子布居数
     allocate(dish_mppops(inp%NBADNS, lbd:ubd))
     dish_mppops = 0.0_q
     ks%dish_pops = NINT(ks%dish_pops/3) / REAL(inp%NTRAJ, kind=q)
 
+    ! 计算多粒子布居数
     do i=1, ks%ndim
       bands = inp%BASIS(:,i) - inp%BMIN + 1
       do bi=1, inp%NACELE
@@ -565,8 +658,10 @@ contains
     end do
 
     if (inp%LBINOUT) then
+      ! 二进制输出
       write(unit=52) dish_mppops
     else
+      ! 文本输出
       do indion=lbd, ubd
         tion = 2 + MOD(indion+inp%NAMDTINI-1-2, inp%NSW-2)
 

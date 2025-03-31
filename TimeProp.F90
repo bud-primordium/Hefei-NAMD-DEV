@@ -1,24 +1,30 @@
+! 时间演化模块
+! 本模块实现了多种时间演化算法，用于求解含时薛定谔方程
+! 主要功能包括：
+! 1. Trotter分解算法（二阶精度）
+! 2. Euler方法（一阶精度）
+! 3. 改进的Euler方法
+! 4. 矩阵对角化方法
+! 5. 支持BLAS加速计算
+
 module TimeProp
-  use prec
-  use constants
-  use utils
-  use fileio
-  use hamil
+  use prec      ! 提供精度控制
+  use constants ! 提供物理常量
+  use utils     ! 提供工具函数
+  use fileio    ! 提供文件操作接口
+  use hamil     ! 提供哈密顿量相关操作
 
   implicit none
 
 contains 
   
-  !Use Trotter formula to integrate the Time-dependtent Schrodinger equation
-  !The new scheme provides a robust and efficient integration. The electronic
-  !time step (POTIM/NELM) may be increased up to the value of the nuclear time step (Not in all)
-  !Always check convergence before using a small NELM 
-  !This scheme is proposed by Akimov, A. V., & Prezhdo, O. V. J. Chem. Theory Comput. 2014, 10, 2, 789–804
-  
-  
-  !This scheme has been revised by Dr.Li yunhai (liyunhai1016@hotmail.com)
-  !To use this scheme, the offdiagonal elements of Hamiltonian should be real numbers (without
-  !the the imaginary unit) 
+  !! 使用Trotter公式求解含时薛定谔方程
+  !! 该算法由Akimov, A. V., 和 Prezhdo, O. V.在J. Chem. Theory Comput. 2014, 10, 2, 789–804提出，由Dr.Li yunhai(liyunhai1016@hotmail.com)修改
+  !! 特点：
+  !! 1. 提供稳健高效的积分方案
+  !! 2. 电子时间步长(POTIM/NELM)可增加到核时间步长（并非所有情况）
+  !! 3. 使用小NELM前需检查收敛性
+  !! 4. 要求哈密顿量的非对角元素为实数（不含虚数单位）
   subroutine Trotter(ks, edt)
     implicit none
 
@@ -27,17 +33,15 @@ contains
     integer :: jj, kk
     complex(kind=q) :: phi, cos_phi, sin_phi, cjj, ckk
 
+    !! 根据Liouville-Trotter算法演化波函数
+    !! exp[i*(L_{ij}+L_i)*dt/2]
+    !! = exp(i*L_{ij}*dt/2) * exp(i*L_i*dt/2) * exp(i*L_i*dt/2) * exp(i*L_{ij}*dt/2)
+    !! = exp(i*L_{ij}*dt/2) * exp(i*L_i*dt) * exp(i*L_{ij}*dt/2)
 
-    ! propagate the psi_c according to Liouville-Trotter algorithm
-    !   exp[i*(L_{ij}+L_i)*dt/2]
-    ! = exp(i*L_{ij}*dt/2) * exp(i*L_i*dt/2) * exp(i*L_i*dt/2) * exp(i*L_{ij}*dt/2)
-    ! = exp(i*L_{ij}*dt/2) * exp(i*L_i*dt) * exp(i*L_{ij}*dt/2)
-
-    ! First L_{ij} part
-    
-    !Changed the matrix structure for NAC.
-    !Now Ham_c(i,j) is stored as  ks%ham_c(j,i)
-    !Weibin
+    !! 第一部分：L_{ij}项
+    !! 注意：非绝热耦合矩阵结构已更改
+    !! 现在Ham_c(i,j)存储为ks%ham_c(j,i)
+    !! 作者：Weibin
 
     do jj = 1, ks%ndim
       do kk = jj+1, ks%ndim
@@ -51,19 +55,17 @@ contains
       end do
     end do
     
-    ! Li part
-
-    !Changed the matrix structure for NAC.
-    !Now Ham_c(i,j) is stored as  ks%ham_c(j,i) 
-    !Weibin
-
+    !! L_i项
+    !! 注意：非绝热耦合矩阵结构已更改
+    !! 现在Ham_c(i,j)存储为ks%ham_c(j,i)
+    !! 作者：Weibin
 
     do jj = 1, ks%ndim
       phi = edt * con%miI * ks%ham_c(jj, jj) / con%hbar
       ks%psi_c(jj) = ks%psi_c(jj) * exp(phi)
     end do
 
-    ! Second L_{ij} part
+    !! 第二部分：L_{ij}项
     do jj = ks%ndim, 1, -1
       do kk = ks%ndim, jj+1, -1
         phi = 0.5_q * edt * con%miI * ks%ham_c(kk, jj) / con%hbar
@@ -77,6 +79,7 @@ contains
     end do
   end subroutine
   
+  !! Trotter算法的矩阵形式实现
   subroutine TrotterMat(ks, edt)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -87,12 +90,13 @@ contains
     complex(kind=q), dimension(ks%ndim,ks%ndim) :: identity, ham_l, ham_r
     complex(kind=q), dimension(ks%ndim) :: cjj, ckk
 
-    ! Here input Ham_c(j,i), output Ham_c(i,j)
+    !! 输入Ham_c(j,i)，输出Ham_c(i,j)
     identity = zDIAG(ks%ndim, [(con%uno, jj=1,ks%ndim)])
-    ! phi
+    !! 计算相位
     ks%ham_c(:,:) = 0.5_q * edt * con%miI * ks%ham_c(:,:) / con%hbar
 
     ham_l = identity
+    !! 第一部分：L_{ij}项
     do jj = 1, ks%ndim
       do kk = jj+1, ks%ndim
         cos_phi = cos(ks%ham_c(kk, jj))
@@ -135,9 +139,9 @@ contains
     end do
 
     ks%ham_c = ham_l
-
   end subroutine
 
+  !! 一阶Euler方法
   subroutine Euler(ks, edt)  
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -145,16 +149,16 @@ contains
 
     ks%psi_c = ks%psi_c &
                & - con%I * edt / con%hbar * matmul(transpose(ks%ham_c), ks%psi_c)
-
   end subroutine
 
-  !! The first step should use Euler method.
+  !! 改进的Euler方法
+  !! 第一步应使用Euler方法
   subroutine EulerMod(ks, edt)
     implicit none
     type(TDKS), intent(inout) :: ks
     real(kind=q), intent(in) :: edt
 
-    !! check, should be deleted.
+    !! 检查内存分配
     if ((inp%DEBUGLEVEL <= 0 .AND. (.NOT. allocated(ks%psi_p)) .OR. (.NOT. allocated(ks%psi_n)))) then
       write(*,*) '[E] Did not allocate memory for psi_p and psi_n'
       stop
@@ -169,9 +173,9 @@ contains
     ! end if
     ks%psi_p = ks%psi_c
     ks%psi_c = ks%psi_n
-
   end subroutine
 
+  !! Euler方法的矩阵形式
   subroutine EulerMat(ks, edt)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -180,6 +184,7 @@ contains
     ks%ham_c = con%miI * edt / con%hbar * ks%ham_c
   end subroutine
 
+  !! 改进Euler方法的矩阵形式
   subroutine EulerModMat(ks, edt)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -188,6 +193,8 @@ contains
     ks%ham_c = 2 * con%miI * edt / con%hbar * ks%ham_c
   end subroutine
 
+  !! 基于对角化的时间演化方法
+  !! 使用MKL库进行矩阵对角化
   subroutine DiagonizeMat(ks, edt)
     implicit none
     type(TDKS), intent(inout) :: ks
@@ -206,8 +213,9 @@ contains
     write(*,*) "[E] Diagnization Algorithm is not implemented without MKL."
     stop
 #else
-    !! https://netlib.org/lapack/explore-html
-    !! zHEEV(JOBZ,UPLO,N,A,LDA,W,WORK,LWORK,RWORK,INFO)
+    !! 使用LAPACK的zHEEV进行矩阵对角化
+    !! 语法为zHEEV(JOBZ,UPLO,N,A,LDA,W,WORK,LWORK,RWORK,INFO)
+    !! 参考：https://netlib.org/lapack/explore-html
     LWORK = 2*ks%ndim - 1
     call zHEEV('V', 'U',                  &
               ks%ndim, ks%ham_c, ks%ndim, &
@@ -247,6 +255,7 @@ contains
   end subroutine
 
 #ifndef ENABLEMKL
+  !! 不使用BLAS的哈密顿量-波函数乘法
   function HamPsi(ham, psi, jobz)
     implicit none
     complex(kind=q), intent(in), dimension(:,:) :: ham
@@ -263,6 +272,7 @@ contains
     end select
   end function
 #else
+  !! 使用BLAS的哈密顿量-波函数乘法
   function HamPsi(ham, psi, jobz) result(HamPsiBlas)
     implicit none
     complex(kind=q), intent(in), dimension(:,:) :: ham
